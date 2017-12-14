@@ -15,6 +15,11 @@
 #include <cublas.h>
 #include <cuda_runtime.h>
 #include "device_launch_parameters.h"
+//CUDA thrust
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/copy.h>
+#include <thrust/for_each.h>
 
 //my headers
 #include "rand64.hpp"
@@ -37,6 +42,15 @@ __global__ void natural_numbers(float* x_device, int length)
 
 __global__ void zeros(float* x_device, int length)
 {
+	////slightly faster, but not safe
+	//int per_thrd = (length ) / (blockDim.x* gridDim.x);
+	//int thrd_id = threadIdx.x + blockIdx.x * blockDim.x;
+
+	//for (int i = thrd_id; i < thrd_id + per_thrd; ++i)
+	//{
+	//	x_device[i] = 0.0f;
+	//}
+
 	int thrd_id = threadIdx.x + blockIdx.x * blockDim.x;
 
 	while (thrd_id < length)
@@ -57,7 +71,18 @@ __global__ void ones(float* x_device, int length)
 	}
 }
 
-float f_integral(const float t)
+__global__ void my_add_vector(size_t length, float* a, float*b)
+{
+	int thrd_id = threadIdx.x + blockIdx.x * blockDim.x;
+
+	while (thrd_id < length)
+	{
+		b[thrd_id] += 1.0* a[thrd_id];
+		thrd_id += blockDim.x* gridDim.x;
+	}
+}
+
+__host__ __device__ float f_integral(float t)
 {
 	return sin(6.28318530718*t);
 }
@@ -65,15 +90,14 @@ float f_integral(const float t)
 int main(int argc, char * argv[])
 {
 	size_t n = 1024*8*8;
-	size_t N_t = 1024 * 16;
-	float tau = 1.0;
-	float dt = tau / N_t;
-	float dt_sq = sqrt(dt);
+	size_t threads_per_block = 512;
 
 	size_t i;
 	curandGenerator_t gen;
-	float *x_host, *y_host;
-	float *x_device, *y_device, *rand_device;
+
+	float *x_host, *v_host;
+	float *x_device, *v_device, *rand_device;
+	float *temp_device, *temp_device2, *swap_device;
 
 	cudaEvent_t start_cuda, stop_cuda;
 	cudaEventCreate(&start_cuda);
@@ -83,16 +107,27 @@ int main(int argc, char * argv[])
 	
 	//Allocate n floats on host
 	x_host = (float *)calloc(n, sizeof(float));
+	v_host = (float *)calloc(n, sizeof(float));
 		
 	// Allocate n floats on device
 	cudaMalloc((void **)& x_device, n * sizeof(float));
+	cudaMalloc((void **)& v_device, n * sizeof(float));
 	cudaMalloc((void **)& rand_device, n * sizeof(float));
+	cudaMalloc((void **)& temp_device, n * sizeof(float));
+	cudaMalloc((void **)& temp_device2, n * sizeof(float));
+
 	
 
 
 	//Assign x on device
 	//natural_numbers<<< 2, 128 >>>(x_device, n);
-	zeros<<<2, 256>>>(x_device, n);
+	//cudaEventRecord(start_cuda, 0);
+	zeros << <2, threads_per_block >> > (x_device, n);
+	zeros << <2, threads_per_block >> > (v_device, n);
+	//cudaEventRecord(stop_cuda, 0);
+	//cudaEventSynchronize(stop_cuda);
+	//cudaEventElapsedTime(&ellapese_time, start_cuda, stop_cuda);
+	//std::cout << "initialize the vector once costs: " << ellapese_time << " ms\n";
 	
 	//Create pseudo - random number generator
 	curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
@@ -102,36 +137,67 @@ int main(int argc, char * argv[])
 	curandSetPseudoRandomGeneratorSeed(gen, seed);
 	printf("Start random walk\n");
 	cudaEventRecord(start_cuda, 0);
+
+	size_t N_t = 1024 * 16;
+	float tau = 1.0;
+	float dt = tau / N_t;
+	float dt_sqrt = sqrt(dt);
+
+	float omega_sq = 1.0f;
+	float C = 1.0f;
+	float gamma = 0.015625f;//  1/64
+
+	//simplest Euler Maruyama method
 	for (size_t i = 0; i < N_t; ++i)
 	{
 		//Generate n floats on device 
 		//curandGenerateUniform(gen, rand_device, n);
-		curandGenerateNormal(gen, rand_device, n, 0, f_integral((i*tau) / N_t)*dt_sq);
-		//vector addition
-		cublasSaxpy(n, 1.0, rand_device, 1, x_device, 1);
+		curandGenerateNormal(gen, rand_device, n, 0, dt_sqrt);
+		//copy V
+		cublasScopy(n, v_device, 1, temp_device, 1);
+		//cublasScopy(n, v_device, 1, temp_device2, 1);
+		//for Damped Harmonic Oscillator
+		//vector addition for V		
+		cublasSaxpy(n, C           , rand_device , 1, temp_device, 1);
+		cublasSaxpy(n, -gamma*dt   , v_device    , 1, temp_device, 1);
+		cublasSaxpy(n, -omega_sq*dt, x_device    , 1, temp_device, 1);
+		//swap
+		//cublasScopy(n, temp_device, 1, v_device, 1);
+		swap_device = temp_device;
+		temp_device = v_device;
+		v_device = swap_device;
+		//vector addition for X
+		cublasSaxpy(n,           dt, temp_device, 1, x_device   , 1);
+		
+
+		//my_add_vector<<< 3, threads_per_block>>>(n, rand_device, x_device);
+		//zeros<<<2, threads_per_block >>>(rand_device, n);
 	}
 	cudaEventRecord(stop_cuda, 0);
 	cudaEventSynchronize(stop_cuda);
 	cudaEventElapsedTime(&ellapese_time, start_cuda, stop_cuda);
-	std::cout << ellapese_time << " ms\n";
+	std::cout << "simulation costs: " << ellapese_time << " ms\n";
 
 	ones<<<2, 128>>>(rand_device, n);
 
 	float average;
-	std::cout << cublasSdot(n, rand_device, 1, x_device, 1)/n << std::endl;
-	std::cout << cublasSdot(n, x_device, 1, x_device, 1)/n << std::endl;
+	std::cout << "average " << cublasSdot(n, rand_device, 1, x_device, 1) / n << std::endl;
+	std::cout << "deviation " << cublasSdot(n, x_device, 1, x_device, 1) / n << std::endl;
+
+	//printf("average %.6f\n", cublasSdot(n, rand_device, 1, x_device, 1) / n);
+	//printf("deviation %.6f\n", cublasSdot(n, x_device, 1, x_device, 1) / n);
 	
 	Deng::RandNumGen::LCG64 rand64(0);
 	std::clock_t start;
 	double duration;
 
-	float temp;
+	float temp = 0.0f;
 	start = std::clock();
 	for (size_t i = 0; i < N_t; ++i)
 	{
 		for (size_t j = 0; j < n; ++j)
 		{
-			temp = rand64();
+			//temp = rand64();
 			x_host[j] += temp;
 		}
 	}
