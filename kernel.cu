@@ -9,17 +9,25 @@
 #include <ctime>
 #include<iostream>
 
+#define DENG_NOT_USING_CUBLAS_V2
+
 //CUDA headers
 #include <cuda.h>
 #include <curand.h>
+
+#ifdef DENG_NOT_USING_CUBLAS_V2
 #include <cublas.h>
+#else
+#include <cublas_v2.h>
+#endif
+
 #include <cuda_runtime.h>
 #include "device_launch_parameters.h"
-//CUDA thrust
-#include <thrust/host_vector.h>
-#include <thrust/device_vector.h>
-#include <thrust/copy.h>
-#include <thrust/for_each.h>
+////CUDA thrust
+//#include <thrust/host_vector.h>
+//#include <thrust/device_vector.h>
+//#include <thrust/copy.h>
+//#include <thrust/for_each.h>
 
 //my headers
 #include "rand64.hpp"
@@ -87,6 +95,7 @@ __host__ __device__ float f_integral(float t)
 	return sin(6.28318530718*t);
 }
 
+
 int main(int argc, char * argv[])
 {
 	size_t n = 1024*8*8;
@@ -94,6 +103,14 @@ int main(int argc, char * argv[])
 
 	size_t i;
 	curandGenerator_t gen;
+
+	
+#ifdef DENG_NOT_USING_CUBLAS_V2
+#else
+	cublasHandle_t cublas_hd;
+	cublasCreate(&cublas_hd);
+#endif
+	
 
 	float *x_host, *v_host;
 	float *x_device, *v_device, *rand_device;
@@ -116,14 +133,11 @@ int main(int argc, char * argv[])
 	cudaMalloc((void **)& temp_device, n * sizeof(float));
 	cudaMalloc((void **)& temp_device2, n * sizeof(float));
 
-	
-
-
 	//Assign x on device
 	//natural_numbers<<< 2, 128 >>>(x_device, n);
 	//cudaEventRecord(start_cuda, 0);
-	zeros << <2, threads_per_block >> > (x_device, n);
-	zeros << <2, threads_per_block >> > (v_device, n);
+	zeros <<<2, threads_per_block >>> (x_device, n);
+	zeros <<<2, threads_per_block >>> (v_device, n);
 	//cudaEventRecord(stop_cuda, 0);
 	//cudaEventSynchronize(stop_cuda);
 	//cudaEventElapsedTime(&ellapese_time, start_cuda, stop_cuda);
@@ -139,13 +153,15 @@ int main(int argc, char * argv[])
 	cudaEventRecord(start_cuda, 0);
 
 	size_t N_t = 1024 * 16;
-	float tau = 1.0;
+	float tau = 16.0;
 	float dt = tau / N_t;
 	float dt_sqrt = sqrt(dt);
 
 	float omega_sq = 1.0f;
 	float C = 1.0f;
-	float gamma = 0.015625f;//  1/64
+	float gamma = 8.0;// 0.015625f;//  1/64
+	float gamma_dt = -gamma*dt;
+
 
 	//simplest Euler Maruyama method
 	for (size_t i = 0; i < N_t; ++i)
@@ -153,6 +169,8 @@ int main(int argc, char * argv[])
 		//Generate n floats on device 
 		//curandGenerateUniform(gen, rand_device, n);
 		curandGenerateNormal(gen, rand_device, n, 0, dt_sqrt);
+
+#ifdef DENG_NOT_USING_CUBLAS_V2
 		//copy V
 		cublasScopy(n, v_device, 1, temp_device, 1);
 		//cublasScopy(n, v_device, 1, temp_device2, 1);
@@ -160,7 +178,7 @@ int main(int argc, char * argv[])
 		//vector addition for V		
 		cublasSaxpy(n, C           , rand_device , 1, temp_device, 1);
 		cublasSaxpy(n, -gamma*dt   , v_device    , 1, temp_device, 1);
-		cublasSaxpy(n, -omega_sq*dt, x_device    , 1, temp_device, 1);
+		//cublasSaxpy(n, -omega_sq*dt, x_device    , 1, temp_device, 1);
 		//swap
 		//cublasScopy(n, temp_device, 1, v_device, 1);
 		swap_device = temp_device;
@@ -168,10 +186,29 @@ int main(int argc, char * argv[])
 		v_device = swap_device;
 		//vector addition for X
 		cublasSaxpy(n,           dt, temp_device, 1, x_device   , 1);
-		
+
 
 		//my_add_vector<<< 3, threads_per_block>>>(n, rand_device, x_device);
 		//zeros<<<2, threads_per_block >>>(rand_device, n);
+#else
+		//copy V
+		cublasScopy(cublas_hd, n, v_device, 1, temp_device, 1);
+		//cublasScopy(n, v_device, 1, temp_device2, 1);
+		//for Damped Harmonic Oscillator
+		//vector addition for V		
+		cublasSaxpy(cublas_hd, n, &C, rand_device, 1, temp_device, 1);
+		cublasSaxpy(cublas_hd, n, &gamma_dt, v_device, 1, temp_device, 1);
+		//cublasSaxpy(n, -omega_sq*dt, x_device    , 1, temp_device, 1);
+		//swap
+		//cublasScopy(n, temp_device, 1, v_device, 1);
+		swap_device = temp_device;
+		temp_device = v_device;
+		v_device = swap_device;
+		//vector addition for X
+		cublasSaxpy(cublas_hd, n, &dt, temp_device, 1, x_device, 1);
+#endif
+
+
 	}
 	cudaEventRecord(stop_cuda, 0);
 	cudaEventSynchronize(stop_cuda);
@@ -181,8 +218,20 @@ int main(int argc, char * argv[])
 	ones<<<2, 128>>>(rand_device, n);
 
 	float average;
-	std::cout << "average " << cublasSdot(n, rand_device, 1, x_device, 1) / n << std::endl;
-	std::cout << "deviation " << cublasSdot(n, x_device, 1, x_device, 1) / n << std::endl;
+	float variance;
+
+#ifdef DENG_NOT_USING_CUBLAS_V2
+	average = cublasSdot(n, rand_device, 1, x_device, 1);
+	variance = cublasSdot(n, x_device, 1, x_device, 1);
+#else
+	cublasSdot(cublas_hd, n, rand_device, 1, x_device, 1, &average);
+	cublasSdot(cublas_hd, n, x_device, 1, x_device, 1, &variance);
+#endif
+	average = average / n;
+	variance = variance / n;
+		
+	std::cout << "average " << average << std::endl;
+	std::cout << "variance " << variance << std::endl;
 
 	//printf("average %.6f\n", cublasSdot(n, rand_device, 1, x_device, 1) / n);
 	//printf("deviation %.6f\n", cublasSdot(n, x_device, 1, x_device, 1) / n);
