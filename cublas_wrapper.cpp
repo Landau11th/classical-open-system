@@ -7,7 +7,7 @@ using namespace Deng::CUDA_Vec;
 
 //template class Col<int>;
 template class Col<float>;
-template class Col<double>;
+//template class Col<double>;
 //template class Col<std::complex<float> >;
 //template class Col<std::complex<double> >;
 
@@ -30,7 +30,7 @@ Col<Field>::Col(const Col<Field>& c)//copy constructor
 	_dim = c.dimension();
 	cudaMalloc((void **)& _vec, _dim * sizeof(Field));
 	//stopped here. Cannot resolven the pointer problem
-	cublasScopy(cublas_handler, _dim, v_device, 1, temp_device, 1);
+	cublasScopy(cublas_handler, _dim, c._vec, 1, _vec, 1);
 }
 template <typename Field>
 Col<Field>::Col(Col<Field>&& c)//move constructor
@@ -48,7 +48,7 @@ void Col<Field>::set_size(unsigned int dim)
 	{
 		_dim = dim;
 		cudaFree(_vec);
-		_vec = cudaMalloc((void **)& _vec, _dim * sizeof(Field));
+		cudaMalloc((void **)& _vec, _dim * sizeof(Field));
 	}
 }
 template <typename Field>
@@ -63,7 +63,7 @@ Col<Field>& Col<Field>::operator=(const Col<Field> & b)
 {
 	set_size(b.dimension());
 
-	cublasScopy(cublas_handler, _dim, v_device, 1, temp_device, 1);
+	cublasScopy(cublas_handler, _dim, b._vec, 1, _vec, 1);
 
 	return *this;
 }
