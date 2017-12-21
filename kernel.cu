@@ -150,8 +150,8 @@ int main(int argc, char * argv[])
 #endif
 	
 
-	size_t N_t = 1024 * 8;
-	float tau = 16.0;
+	size_t N_t = 1024 * 64;
+	float tau = 4.0;
 	float dt = tau / N_t;
 	float dt_sqrt = sqrt(dt);
 
@@ -162,7 +162,7 @@ int main(int argc, char * argv[])
 	float omega_tau = 3.0;
 
 	
-	float gamma = 1.0;// 0.015625f;//  1/64
+	float gamma = 1.0/4.0;// 0.015625f;//  1/64
 	float gamma_dt = -gamma*dt;
 	float C = sqrt(2 * gamma/beta);
 
