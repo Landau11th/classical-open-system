@@ -9,3 +9,9 @@ Start random walk
 simulation costs: 16305.9 ms
 average 0.332705
 variance 0.183638
+
+for optimized
+Start random walk
+simulation costs: 10461.8 ms
+average 0.330463
+variance 0.182059
